@@ -1,0 +1,11 @@
+
+@PACKAGE_INIT@
+
+# TopologyFabric package config for the Topology Fabric 1.0.0 C++ runtime.
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/TopologyFabricTargets.cmake")
+
+# Downstream alias (already exported as TopologyFabric::topology_fabric)
+check_required_components(TopologyFabric)

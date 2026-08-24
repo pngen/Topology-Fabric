@@ -1,0 +1,17 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# Editor/session artifacts
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln
+
+# Scratch
+snap.json
+out.txt
+err.txt
+*.log
