@@ -40,10 +40,6 @@ Topology Fabric exposes facts; it does not make placement or transfer decisions:
 | Unified Buffer     | allocation, ownership, lifetime       | not involved                              |
 | FlashTier          | residency/promotion, tiering          | not involved                              |
 | Tensor Cache / KV   | cache admission, state lifecycle      | not involved                              |
-| Bandwidth Governor | (future) contention arbitration       | provides link identities & nominal BW     |
-| NUMA Fabric        | (future) dynamic NUMA placement       | provides NUMA structure                   |
-| PCIe Fabric        | (future) PCIe monitoring/control      | provides PCIe hierarchy                   |
-| Collective Fabric  | (future) collective scheduling        | provides topology relationships           |
 
 Topology Fabric **never absorbs** the decision/execution responsibilities of those systems.
 
