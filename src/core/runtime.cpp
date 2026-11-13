@@ -65,10 +65,14 @@ std::shared_ptr<const TopologySnapshot> TopologyRuntime::discover() {
     telemetry_.record_provider_run(provider->name(), cont.success, ms);
     telemetry_.add_provider_time(ms);
     if (cont.partial) { anyPartial = true; telemetry_.record_partial_discovery(); }
+    // What a provider had to say about its run belongs to the snapshot.
+    for (const auto& w : cont.warnings) allWarnings.push_back(provider->name() + ": " + w);
     contributions.push_back(std::move(cont));
   }
 
   MergedGraph merged = merge_contributions(contributions, bounds_);
+  // So does everything the merge dropped (bounds, dangling edges).
+  for (const auto& w : merged.warnings) allWarnings.push_back("merge: " + w);
 
   // Connect rootless resource nodes into the machine containment hierarchy so the
   // graph is connected and path/locality reasoning works. Deterministic and safe:

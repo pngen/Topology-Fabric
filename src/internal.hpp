@@ -88,6 +88,10 @@ inline double edge_traversal_cost(const TopologyNode& u, const TopologyNode& v,
   // Guard against NaN/inf from degenerate weights/metrics so the priority queue and
   // cost comparisons remain well-defined. A huge finite penalty is deterministic.
   if (std::isnan(cost) || std::isinf(cost)) cost = 1e15;
+  // A traversal never has a negative cost. With one, the lowest-cost search
+  // would keep "improving" a route by walking an edge back and forth and
+  // would not end when the destination cannot be reached.
+  if (cost < 0.0) cost = 0.0;
   return cost;
 }
 

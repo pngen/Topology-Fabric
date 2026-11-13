@@ -77,15 +77,25 @@ json::Value native_to_json(const NativeIdentity& n) {
   return o;
 }
 
+// Identity numbers come from a possibly untrusted document. A value that is
+// not an integer of the field's range is malformed; wrapping it would turn it
+// into the identity of some other device.
+static uint64_t identity_number(const json::Value& v, uint64_t max, const char* k) {
+  if (v.is_uint() && v.as_uint() <= max) return v.as_uint();
+  if (v.is_int() && v.as_int() >= 0 && static_cast<uint64_t>(v.as_int()) <= max)
+    return static_cast<uint64_t>(v.as_int());
+  throw TopologyError(ErrorCode::MALFORMED_DATA,
+                      std::string("native identity field '") + k + "' is out of range");
+}
 static std::optional<uint16_t> opt_u16(const json::Value& o, const char* k) {
   auto* p = o.find(k);
   if (!p || p->is_null()) return std::nullopt;
-  return static_cast<uint16_t>(p->integer());
+  return static_cast<uint16_t>(identity_number(*p, 0xFFFFu, k));
 }
 static std::optional<uint32_t> opt_u32(const json::Value& o, const char* k) {
   auto* p = o.find(k);
   if (!p || p->is_null()) return std::nullopt;
-  return static_cast<uint32_t>(p->integer());
+  return static_cast<uint32_t>(identity_number(*p, 0xFFFFFFFFu, k));
 }
 
 NativeIdentity native_from_json(const json::Value& o) {
@@ -239,11 +249,17 @@ std::string serialize_snapshot_json(const TopologySnapshot& snap, bool pretty) {
 
 std::shared_ptr<const TopologySnapshot> deserialize_snapshot_json(const std::string& jsonText,
                                                                   const Bounds& bounds) {
-  auto r = json::parse(jsonText);
-  if (!r.ok())
-    throw TopologyError(ErrorCode::MALFORMED_DATA, "malformed JSON: " + r.message);
+  // Size bounds come first: an input that is too large is refused before any
+  // of it is parsed, and no string longer than the snapshot bound is built.
   if (jsonText.size() > bounds.max_snapshot_bytes)
     throw TopologyError(ErrorCode::OVERSIZED, "serialized snapshot exceeds bound");
+  json::ParseOptions opt;
+  if (bounds.max_string_bytes < opt.max_string_bytes) opt.max_string_bytes = bounds.max_string_bytes;
+  auto r = json::parse(jsonText, opt);
+  if (r.error == json::ParseError::SizeExceeded)
+    throw TopologyError(ErrorCode::OVERSIZED, "snapshot JSON exceeds a size bound: " + r.message);
+  if (!r.ok())
+    throw TopologyError(ErrorCode::MALFORMED_DATA, "malformed JSON: " + r.message);
   const auto& root = r.value;
   if (!root.is_object())
     throw TopologyError(ErrorCode::MALFORMED_DATA, "snapshot root must be an object");

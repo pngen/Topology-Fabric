@@ -58,7 +58,11 @@ class CudaDriver {
     cuDeviceGet = (DevFn)resolve("cuDeviceGet");
     cuDeviceGetName = (NameFn)resolve("cuDeviceGetName");
     cuDeviceGetAttribute = (AttrFn)resolve("cuDeviceGetAttribute");
-    cuDeviceTotalMem = (MemFn)resolve("cuDeviceTotalMem");
+    // The unsuffixed export is the legacy call that reports a 32-bit byte
+    // count; the 64-bit one is cuDeviceTotalMem_v2. The legacy call is kept
+    // for drivers that only have that.
+    cuDeviceTotalMem = (MemFn)resolve("cuDeviceTotalMem_v2");
+    if (!cuDeviceTotalMem) cuDeviceTotalMem32 = (Mem32Fn)resolve("cuDeviceTotalMem");
     cuDeviceComputeCapability = (CapsFn)resolve("cuDeviceComputeCapability");
     cuDeviceCanAccessPeer = (PeerFn)resolve("cuDeviceCanAccessPeer");
     cuDeviceGetUuid = (UuidFn)resolve("cuDeviceGetUuid");
@@ -77,6 +81,7 @@ class CudaDriver {
   typedef CUresult (*NameFn)(char*, int, CUdevice);
   typedef CUresult (*AttrFn)(int*, int, CUdevice);
   typedef CUresult (*MemFn)(size_t*, CUdevice);
+  typedef CUresult (*Mem32Fn)(unsigned int*, CUdevice);
   typedef CUresult (*CapsFn)(int*, int*, CUdevice);
   typedef CUresult (*PeerFn)(int*, CUdevice, CUdevice);
   typedef CUresult (*UuidFn)(CuUuid*, CUdevice);
@@ -88,6 +93,7 @@ class CudaDriver {
   NameFn cuDeviceGetName = nullptr;
   AttrFn cuDeviceGetAttribute = nullptr;
   MemFn cuDeviceTotalMem = nullptr;
+  Mem32Fn cuDeviceTotalMem32 = nullptr;
   CapsFn cuDeviceComputeCapability = nullptr;
   PeerFn cuDeviceCanAccessPeer = nullptr;
   UuidFn cuDeviceGetUuid = nullptr;
@@ -156,10 +162,14 @@ class CudaProvider : public TopologyProvider {
 
       int major = 0, minor = 0; d.cuDeviceComputeCapability(&major, &minor, dev);
       int pciBus = 0, pciDev = 0, pciDom = 0;
-      get_attr(d, dev, kPciBusId, pciBus);
-      get_attr(d, dev, kPciDeviceId, pciDev);
-      get_attr(d, dev, kPciDomainId, pciDom);
-      size_t memBytes = 0; if (d.cuDeviceTotalMem) d.cuDeviceTotalMem(&memBytes, dev);
+      // The PCI address is only claimed when the driver reported one. A default
+      // of 0000:00:00.0 would merge the device with whatever sits there.
+      const bool havePci = get_attr(d, dev, kPciBusId, pciBus) && get_attr(d, dev, kPciDeviceId, pciDev) &&
+                           pciBus >= 0 && pciBus <= 0xFF && pciDev >= 0 && pciDev <= 0x1F;
+      const bool havePciDomain = get_attr(d, dev, kPciDomainId, pciDom) && pciDom >= 0 && pciDom <= 0xFFFF;
+      size_t memBytes = 0;
+      if (d.cuDeviceTotalMem) d.cuDeviceTotalMem(&memBytes, dev);
+      else if (d.cuDeviceTotalMem32) { unsigned int m32 = 0; if (d.cuDeviceTotalMem32(&m32, dev) == TF_OK) memBytes = m32; }
       int uva = 0, managed = 0, asyncEng = 0, concKern = 0, canMapHost = 0, pageable = 0;
       get_attr(d, dev, kUnifiedAddressing, uva);
       get_attr(d, dev, kManagedMemory, managed);
@@ -183,10 +193,12 @@ class CudaProvider : public TopologyProvider {
       n.native.name = devName;
       n.native.cuda_ordinal = static_cast<uint32_t>(ord);
       n.native.cuda_uuid = uuidStr;
-      n.native.pci_domain = static_cast<uint16_t>(pciDom);
-      n.native.pci_bus = static_cast<uint16_t>(pciBus);
-      n.native.pci_device = static_cast<uint16_t>(pciDev);
-      n.native.pci_function = 0;
+      if (havePci) {
+        if (havePciDomain) n.native.pci_domain = static_cast<uint16_t>(pciDom);
+        n.native.pci_bus = static_cast<uint16_t>(pciBus);
+        n.native.pci_device = static_cast<uint16_t>(pciDev);
+        n.native.pci_function = 0;
+      }
       n.provenance = prov;
       Capability caps = Capability::DEVICE_ADDRESSABLE | Capability::DMA_CAPABLE;
       if (uva) { caps = caps | Capability::CPU_ADDRESSABLE; }
@@ -222,7 +234,7 @@ class CudaProvider : public TopologyProvider {
       m.native.cuda_ordinal = static_cast<uint32_t>(ord);
       m.provenance = infer;
       m.capabilities = Capability::DEVICE_ADDRESSABLE;
-      m.properties.emplace("cuda.total_memory", PropertyValue(static_cast<uint64_t>(memBytes)));
+      if (memSane) m.properties.emplace("cuda.total_memory", PropertyValue(static_cast<uint64_t>(memBytes)));
       c.nodes.push_back(std::move(m));
       ContributedEdge e;
       e.from_ref = ref; e.to_ref = memRef; e.type = EdgeType::CONTAINS;

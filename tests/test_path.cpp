@@ -3,6 +3,36 @@
 
 using namespace topology_fabric;
 
+TF_TEST(path_inaccessible_edge_is_not_a_route) {
+  // a-b and a-d are recorded as not accessible. The only usable route from a
+  // to b is a-c-b, and d cannot be reached at all.
+  auto make = [](const char* name, NodeType type) {
+    TopologyNode n; n.id = derive_node_id("t", "n", name); n.type = type; n.name = name; return n;
+  };
+  auto link = [](const TopologyNode& s, const TopologyNode& t, bool accessible) {
+    TopologyEdge e; e.source = s.id; e.target = t.id; e.type = EdgeType::CONNECTED_TO;
+    e.direction = EdgeDirection::UNDIRECTED; e.confidence = Confidence::HIGH; e.accessible = accessible;
+    return e;
+  };
+  const TopologyNode a = make("a", NodeType::ACCELERATOR), b = make("b", NodeType::ACCELERATOR);
+  const TopologyNode c = make("c", NodeType::PCI_BRIDGE), d = make("d", NodeType::ACCELERATOR);
+  SnapshotBuilder builder;
+  builder.add_node(a); builder.add_node(b); builder.add_node(c); builder.add_node(d);
+  builder.add_edge(link(a, b, false));
+  builder.add_edge(link(a, c, true));
+  builder.add_edge(link(c, b, true));
+  builder.add_edge(link(a, d, false));
+  auto snap = builder.take();
+  auto hops = shortest_path(*snap, a.id, b.id);
+  ASSERT(hops.found);
+  ASSERT(hops.hop_count == 2);
+  auto cheapest = lowest_cost_path(*snap, a.id, b.id, CostWeights{});
+  ASSERT(cheapest.found);
+  ASSERT(cheapest.hop_count == 2);
+  ASSERT(!shortest_path(*snap, a.id, d.id).found);
+  ASSERT(!lowest_cost_path(*snap, a.id, d.id, CostWeights{}).found);
+}
+
 TF_TEST(path_same_object) {
   auto snap = tf_test_util::build_snapshot(
       { {NodeType::MACHINE, "m", "m"}, {NodeType::ACCELERATOR, "g", "g"} },

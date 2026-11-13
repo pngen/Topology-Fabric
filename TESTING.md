@@ -1,7 +1,7 @@
 # Testing
 
 Topology Fabric uses a small dependency-free test harness (tests/test_harness.hpp) and a single
-`tf_tests` executable. As of 1.0.0 there are **67 passing test cases**. This document describes
+`tf_tests` executable. As of 1.0.0 there are **78 passing test cases**. This document describes
 the suites, the methodology, and the guarantees the tests provide.
 
 ## Running the tests

@@ -1,6 +1,7 @@
 #include "test_harness.hpp"
 #include "tf_test_util.hpp"
 #include "topology_fabric/serialization.hpp"
+#include "topology_fabric/result.hpp"
 
 using namespace topology_fabric;
 
@@ -76,4 +77,64 @@ TF_TEST(ser_property_roundtrip) {
   bool found = false;
   for (auto& [id, n] : back->nodes()) { auto it = n.properties.find("k"); if (it != n.properties.end() && it->second.as_string()=="v") found = true; }
   ASSERT(found);
+}
+
+TF_TEST(ser_roundtrip_is_exact) {
+  // What the writer emits reads back as the same values: fractional and very
+  // small doubles, whole-number doubles (still doubles), unsigned values above
+  // 2^63, and text outside ASCII.
+  TopologyNode a; a.id = derive_node_id("t", "n", "a"); a.type = NodeType::MACHINE;
+  a.name = "h\xC3\xB4te \xE2\x84\xA2";
+  a.properties.emplace("ratio", PropertyValue(1.0 / 3.0));
+  a.properties.emplace("tiny", PropertyValue(1.25e-9));
+  a.properties.emplace("whole", PropertyValue(64.0));
+  a.properties.emplace("big", PropertyValue(static_cast<uint64_t>(0xFFFFFFFFFFFFFFF0ull)));
+  TopologyNode g; g.id = derive_node_id("t", "n", "g"); g.type = NodeType::ACCELERATOR; g.name = "g";
+  TopologyEdge e; e.source = a.id; e.target = g.id; e.type = EdgeType::CONNECTED_TO;
+  e.bandwidth_bytes_per_sec = 12345678901.25;
+  e.latency_ns = 123.4567891234;
+  e.locality_score = 1.0 / 3.0;
+  e.peer_capability = 0x8000000000000001ull;
+  SnapshotBuilder b;
+  SnapshotMetadata meta; meta.generation = 1; meta.machine_identity = "m"; meta.synthetic = true;
+  b.set_metadata(meta);
+  b.add_node(a); b.add_node(g); b.add_edge(e);
+  auto snap = b.take();
+  auto back = deserialize_snapshot_json(serialize_snapshot_json(*snap));
+  auto* na = back->find_node(a.id);
+  ASSERT(na != nullptr);
+  if (na) {
+    ASSERT(na->name == a.name);
+    ASSERT(na->properties == a.properties);
+  }
+  ASSERT(back->edge_count() == 1);
+  if (back->edge_count() == 1) {
+    const auto& be = back->edge(0);
+    ASSERT(be.bandwidth_bytes_per_sec == e.bandwidth_bytes_per_sec);
+    ASSERT(be.latency_ns == e.latency_ns);
+    ASSERT(be.locality_score == e.locality_score);
+    ASSERT(be.peer_capability == e.peer_capability);
+  }
+  // A snapshot and its round trip are the same topology.
+  auto d = compare_snapshots(*snap, *back);
+  ASSERT(!d.material_change);
+  ASSERT(d.events.empty());
+}
+
+TF_TEST(ser_size_bounds_are_enforced_first) {
+  // An input over the byte bound is refused for its size, before it is parsed.
+  Bounds small; small.max_snapshot_bytes = 16;
+  bool oversized = false;
+  try { deserialize_snapshot_json(std::string(64, '['), small); }
+  catch (const TopologyError& err) { oversized = err.code() == ErrorCode::OVERSIZED; }
+  ASSERT(oversized);
+  // The snapshot's per-string bound holds for imported documents.
+  auto snap = tf_test_util::build_snapshot({ {NodeType::MACHINE, std::string(256, 'x'), "m"} }, {});
+  auto json = serialize_snapshot_json(*snap);
+  Bounds strings; strings.max_string_bytes = 64;
+  bool refused = false;
+  try { deserialize_snapshot_json(json, strings); }
+  catch (const TopologyError& err) { refused = err.code() == ErrorCode::OVERSIZED; }
+  ASSERT(refused);
+  ASSERT(deserialize_snapshot_json(json) != nullptr);
 }

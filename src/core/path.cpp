@@ -12,6 +12,8 @@ namespace {
 
 bool traverse_edge(const TopologySnapshot& snap, const EdgeRef& ref, bool in_collocation) {
   const auto& e = snap.edge(ref.edge_index);
+  // An edge recorded as not accessible is a known relationship, not a route.
+  if (!e.accessible) return false;
   if (detail::collocation_edge(e.type)) return in_collocation;
   return true;
 }

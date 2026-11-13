@@ -170,7 +170,9 @@ MergedGraph merge_contributions(const std::vector<Contribution>& contributions,
         auto it = node.properties.find(k);
         if (it == node.properties.end()) {
           node.properties.emplace(k, v);
-        } else {
+        } else if (!(it->second == v)) {
+          // Only a member that disagrees is a conflict; providers that report
+          // the same value corroborate each other.
           mg.conflicts.push_back(std::string("property '") + k + "' conflict on group '" + key +
                                  "'; keeping higher-confidence value");
         }
@@ -188,7 +190,12 @@ MergedGraph merge_contributions(const std::vector<Contribution>& contributions,
   std::unordered_map<std::string, TopologyNodeId> refToId;
   // Prefer canonical group keys.
   for (auto& [key, gid] : groupNodeId) refToId.try_emplace(key, gid);
-  for (auto& [ci, ref, key] : refMap) refToId.try_emplace(ref, groupNodeId[key]);
+  for (auto& [ci, ref, key] : refMap) {
+    // A group that was dropped (node bound) resolves nothing: an edge to it is
+    // dangling and is dropped below, not kept with an endpoint that is no node.
+    auto git = groupNodeId.find(key);
+    if (git != groupNodeId.end()) refToId.try_emplace(ref, git->second);
+  }
 
   for (size_t ci = 0; ci < contributions.size(); ++ci) {
     const auto& c = contributions[ci];

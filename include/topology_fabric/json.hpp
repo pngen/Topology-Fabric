@@ -8,6 +8,10 @@
 #include <stdexcept>
 #include <memory>
 #include <cmath>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
 #include <algorithm>
 
 namespace topology_fabric::json {
@@ -178,8 +182,30 @@ class Parser {
     pos_ += n; return true;
   }
 
+  // Length of the well-formed UTF-8 sequence that starts at `at` (2..4), or 0.
+  size_t utf8_sequence(size_t at) const {
+    auto byte = [&](size_t i) { return static_cast<unsigned char>(p_[i]); };
+    const unsigned char b0 = byte(at);
+    size_t n = 0;
+    uint32_t cp = 0;
+    if (b0 >= 0xC2 && b0 <= 0xDF) { n = 2; cp = b0 & 0x1Fu; }
+    else if (b0 >= 0xE0 && b0 <= 0xEF) { n = 3; cp = b0 & 0x0Fu; }
+    else if (b0 >= 0xF0 && b0 <= 0xF4) { n = 4; cp = b0 & 0x07u; }
+    else return 0;
+    if (at + n > len_) return 0;
+    for (size_t i = 1; i < n; ++i) {
+      if ((byte(at + i) & 0xC0u) != 0x80u) return 0;
+      cp = (cp << 6) | (byte(at + i) & 0x3Fu);
+    }
+    if (n == 3 && (cp < 0x800u || (cp >= 0xD800u && cp <= 0xDFFFu))) return 0;   // overlong / surrogate
+    if (n == 4 && (cp < 0x10000u || cp > 0x10FFFFu)) return 0;                   // overlong / out of range
+    return n;
+  }
+
+  // Every way a string can fail sets the error: a caller that sees `false`
+  // must never be able to report success for the value it was reading.
   bool parse_string(std::string& out) {
-    if (p_[pos_] != '"') return false;
+    if (p_[pos_] != '"') return fail(ParseError::UnexpectedChar, "expected a string");
     ++pos_;
     std::string buf;
     while (pos_ < len_) {
@@ -187,7 +213,7 @@ class Parser {
       if (c == '"') { ++pos_; out = std::move(buf); return true; }
       if (c == '\\') {
         ++pos_;
-        if (pos_ >= len_) return false;
+        if (pos_ >= len_) return fail(ParseError::UnexpectedEnd, "unterminated escape in string");
         char e = p_[pos_];
         switch (e) {
           case '"': buf.push_back('"'); ++pos_; break;
@@ -199,23 +225,29 @@ class Parser {
           case 'r': buf.push_back('\r'); ++pos_; break;
           case 't': buf.push_back('\t'); ++pos_; break;
           case 'u': {
-            if (pos_ + 5 > len_) return false;
+            if (pos_ + 5 > len_) return fail(ParseError::UnexpectedEnd, "truncated \\u escape");
             uint32_t cp = 0;
-            for (int k = 0; k < 4; ++k) { char h = p_[pos_ + 1 + k]; uint32_t d; if (h>='0'&&h<='9') d=h-'0'; else if (h>='a'&&h<='f') d=h-'a'+10; else if (h>='A'&&h<='F') d=h-'A'+10; else return false; cp = cp*16 + d; }
+            for (int k = 0; k < 4; ++k) { char h = p_[pos_ + 1 + k]; uint32_t d; if (h>='0'&&h<='9') d=h-'0'; else if (h>='a'&&h<='f') d=h-'a'+10; else if (h>='A'&&h<='F') d=h-'A'+10; else return fail(ParseError::InvalidEscape, "invalid \\u escape"); cp = cp*16 + d; }
             pos_ += 5;
             append_utf8(buf, cp);
             break;
           }
-          default: return false;
+          default: return fail(ParseError::InvalidEscape, "invalid escape in string");
         }
-        if (buf.size() > opt_.max_string_bytes) return false;
+        if (buf.size() > opt_.max_string_bytes) return fail(ParseError::SizeExceeded, "string exceeds the size bound");
+      } else if (static_cast<unsigned char>(c) >= 0x80) {
+        // The writer emits strings as they are, so text outside ASCII arrives
+        // as raw UTF-8. It is accepted when it is well formed.
+        const size_t n = utf8_sequence(pos_);
+        if (n == 0) return fail(ParseError::InvalidUtf8, "invalid UTF-8 in string");
+        buf.append(p_ + pos_, n); pos_ += n;
+        if (buf.size() > opt_.max_string_bytes) return fail(ParseError::SizeExceeded, "string exceeds the size bound");
       } else {
-        if (static_cast<unsigned char>(c) >= 0x80) { return false; } // non-ASCII must be escaped in our strict writer; tolerate else
         buf.push_back(c); ++pos_;
-        if (buf.size() > opt_.max_string_bytes) return false;
+        if (buf.size() > opt_.max_string_bytes) return fail(ParseError::SizeExceeded, "string exceeds the size bound");
       }
     }
-    return false;
+    return fail(ParseError::UnexpectedEnd, "unterminated string");
   }
 
   static void append_utf8(std::string& s, uint32_t cp) {
@@ -246,10 +278,20 @@ class Parser {
       if (end != tok.c_str() + tok.size()) return ParseError::InvalidNumber;
       out = Value(d);
     } else {
-      char* end = nullptr; long long ll = std::strtoll(tok.c_str(), &end, 10);
-      if (end != tok.c_str() + tok.size()) return ParseError::InvalidNumber;
-      if (tok[0] == '-') out = Value(static_cast<int64_t>(ll));
-      else out = Value(static_cast<uint64_t>(ll));
+      // An integer that does not fit is rejected, never clamped. Non-negative
+      // values use the whole unsigned range, so every uint64 the writer emits
+      // reads back as written.
+      char* end = nullptr;
+      errno = 0;
+      if (tok[0] == '-') {
+        long long ll = std::strtoll(tok.c_str(), &end, 10);
+        if (end != tok.c_str() + tok.size() || errno == ERANGE) return ParseError::InvalidNumber;
+        out = Value(static_cast<int64_t>(ll));
+      } else {
+        unsigned long long ull = std::strtoull(tok.c_str(), &end, 10);
+        if (end != tok.c_str() + tok.size() || errno == ERANGE) return ParseError::InvalidNumber;
+        out = Value(static_cast<uint64_t>(ull));
+      }
     }
     return ParseError::None;
   }
@@ -329,10 +371,14 @@ inline void write_value(const Value& v, std::string& out, WriteMode mode, int de
       double d = v.as_double();
       if (std::isnan(d)) { out += "null"; break; }
       if (std::isinf(d)) { if (d > 0) out += "1e9999"; else out += "-1e9999"; break; }
-      std::string s = std::to_string(d);
-      // strip trailing zeros
-      size_t dot = s.find('.');
-      if (dot != std::string::npos) { while (!s.empty() && s.back() == '0') s.pop_back(); if (!s.empty() && s.back() == '.') s.pop_back(); }
+      // The shortest text that reads back as the same double, always in a
+      // form the parser reads as a double, so value and type both survive a
+      // round trip.
+      char num[40];
+      std::snprintf(num, sizeof(num), "%.15g", d);
+      if (std::strtod(num, nullptr) != d) std::snprintf(num, sizeof(num), "%.17g", d);
+      std::string s = num;
+      if (s.find_first_of(".eE") == std::string::npos) s += ".0";
       out += s; break;
     }
     case Value::Kind::String: {

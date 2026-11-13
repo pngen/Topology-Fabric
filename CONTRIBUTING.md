@@ -49,7 +49,7 @@ This produces:
     # or directly
     build/tests/Release/tf_tests.exe
 
-There are 67 test cases. A clean run must print "0 failure(s)" and exit 0. The suite includes
+There are 78 test cases. A clean run must print "0 failure(s)" and exit 0. The suite includes
 property tests (deterministic PRNG), adversarial tests, and concurrency tests; there are no test
 timeouts.
 
@@ -106,7 +106,7 @@ implementation; read the header and the .cpp before writing.
 ## Pull request checklist
 
 - Builds clean in Debug and Release with zero warnings.
-- All 67 existing tests pass; new tests cover your change.
+- All 78 existing tests pass; new tests cover your change.
 - Public headers are self-contained; no new unbounded inputs.
 - Determinism preserved (identical inputs yield identical outputs).
 - Provenance / confidence added for any new fact.

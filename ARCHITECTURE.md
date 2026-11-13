@@ -101,7 +101,7 @@ returns a graceful "not implemented" partial contribution. The factories are dec
 - `src/cli/main.cpp` — the `topology-fabric` command-line tool.
 - `examples/` — 14 runnable `ex_*` programs.
 - `benchmarks/` — `tf_bench_graph` and `tf_bench_discovery`.
-- `tests/` — `tf_tests` with 67 test cases.
+- `tests/` — `tf_tests` with 78 test cases.
 
 ## Discovery pipeline
 
